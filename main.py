@@ -5,6 +5,8 @@ from ultralytics import YOLO
 import cv2
 import numpy as np
 import requests
+import httpx
+import asyncio
 
 class ImageURLs(BaseModel):
     urls: list[str]
@@ -41,7 +43,13 @@ def upload_to_storage(image_bytes_list: list[bytes]) -> str:
         img_urls.append(image.get("urlImage"))
     return img_urls
 
-
+async def fetch_image(url, client):
+    try:
+        resp = await client.get(url, timeout=5)
+        img_np = np.frombuffer(resp.content, np.uint8)
+        return cv2.imdecode(img_np, cv2.IMREAD_COLOR)
+    except:
+        return None
 # -----------------------------
 # API DETECT + UPLOAD
 # -----------------------------
@@ -49,26 +57,17 @@ def upload_to_storage(image_bytes_list: list[bytes]) -> str:
 async def detect_from_urls(data: ImageURLs):
     if not data.urls:
         return JSONResponse({"result_urls": []})
-    
+    print("tải ảnh------")
     # 1️⃣ Tải tất cả ảnh về (gom batch)
-    images = []
-    for url in data.urls:
-        try:
-            img_bytes = requests.get(url).content
-            img_np = np.frombuffer(img_bytes, np.uint8)
-            img = cv2.imdecode(img_np, cv2.IMREAD_COLOR)
-            images.append(img)
-        except Exception as e:
-            print("Error processing URL:", url, e)
-            print("Error:", e)
+    async with httpx.AsyncClient() as client:
+        tasks = [fetch_image(url, client) for url in data.urls]
+        valid_images = [img for img in await asyncio.gather(*tasks) if img is not None]
 
-    # Xử lý ảnh lỗi
-    valid_images = [img for img in images if img is not None]
-    if len(valid_images) == 0:
-        return JSONResponse({"result_urls": []})
-
+    if not valid_images:
+        return {"result_urls": []}
+    print("predict------")
     # 2️⃣ YOLO predict 1 lần cho cả batch
-    results = model(valid_images, verbose=False)
+    results = model(valid_images, conf=0.6, imgsz=960)
 
     # 3️⃣ Tạo annotated images
     annotated_list = []
@@ -78,8 +77,8 @@ async def detect_from_urls(data: ImageURLs):
         annotated_list.append(encoded.tobytes())
 
     # 4️⃣ Upload batch annotated images 1 lần
-    uploaded_urls = upload_to_storage(annotated_list)
+    # uploaded_urls = upload_to_storage(annotated_list)
 
     return JSONResponse({
-        "result_urls": uploaded_urls
+        "result_urls": []
     })
