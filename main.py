@@ -7,6 +7,7 @@ import numpy as np
 import requests
 import httpx
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 
 class ImageURLs(BaseModel):
     urls: list[str]
@@ -15,6 +16,8 @@ app = FastAPI(title="YOLO PPE Detection API")
 
 model = YOLO("./models/best.pt")
 
+# Tạo thread pool encode JPEG
+executor = ThreadPoolExecutor(max_workers=8)
 
 # -----------------------------
 # HÀM UPLOAD ẢNH LÊN API KHÁC
@@ -43,6 +46,11 @@ def upload_to_storage(image_bytes_list: list[bytes]) -> str:
         img_urls.append(image.get("urlImage"))
     return img_urls
 
+def encode_image(img):
+    # Encode JPEG nhanh với chất lượng 80 (nhẹ hơn)
+    ok, encoded = cv2.imencode(".jpg", img, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+    return encoded.tobytes() if ok else None
+
 async def fetch_image(url, client):
     try:
         resp = await client.get(url, timeout=5)
@@ -70,15 +78,20 @@ async def detect_from_urls(data: ImageURLs):
     results = model(valid_images, conf=0.6, imgsz=960)
 
     # 3️⃣ Tạo annotated images
-    annotated_list = []
-    for result in results:
-        annotated = result.plot()
-        _, encoded = cv2.imencode(".jpg", annotated)
-        annotated_list.append(encoded.tobytes())
+    annotated_images = [r.plot() for r in results]
+
+    # 4️⃣ Encode JPEG song song bằng thread pool
+    loop = asyncio.get_running_loop()
+    encoded_images = await asyncio.gather(
+        *[
+            loop.run_in_executor(executor, encode_image, img)
+            for img in annotated_images
+        ]
+    )
 
     # 4️⃣ Upload batch annotated images 1 lần
-    # uploaded_urls = upload_to_storage(annotated_list)
+    uploaded_urls = upload_to_storage(encoded_images)
 
     return JSONResponse({
-        "result_urls": []
+        "result_urls": uploaded_urls
     })
