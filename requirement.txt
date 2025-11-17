@@ -1,5 +1,0 @@
-ultralytics>=8.0.200
-fastapi
-uvicorn
-opencv-python
-numpy
