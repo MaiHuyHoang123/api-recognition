@@ -8,6 +8,7 @@ import requests
 import httpx
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+import torch
 
 class ImageURLs(BaseModel):
     urls: list[str]
@@ -56,42 +57,65 @@ async def fetch_image(url, client):
         resp = await client.get(url, timeout=5)
         img_np = np.frombuffer(resp.content, np.uint8)
         return cv2.imdecode(img_np, cv2.IMREAD_COLOR)
-    except:
+    except Exception as e:
+        print(f"Đã xảy ra lỗi khi tải ảnh {url}: {e}")
         return None
 # -----------------------------
 # API DETECT + UPLOAD
 # -----------------------------
 @app.post("/detect/")
 async def detect_from_urls(data: ImageURLs):
+    print("-----------------------------------")
+    print("Received URLs:", data.urls)
     if not data.urls:
         return JSONResponse({"result_urls": []})
-    print("tải ảnh------")
     # 1️⃣ Tải tất cả ảnh về (gom batch)
     async with httpx.AsyncClient() as client:
         tasks = [fetch_image(url, client) for url in data.urls]
-        valid_images = [img for img in await asyncio.gather(*tasks) if img is not None]
+        imgs = await asyncio.gather(*tasks)
+        valid_images = []
+        valid_index_map = []   # lưu mapping index để khớp YOLO results → URL
+
+        for i, img in enumerate(imgs):
+            if img is not None:
+                valid_images.append(img)
+                valid_index_map.append(i)
 
     if not valid_images:
         return {"result_urls": []}
-    print("predict------")
     # 2️⃣ YOLO predict 1 lần cho cả batch
     results = model(valid_images, conf=0.6, imgsz=960)
-
-    # 3️⃣ Tạo annotated images
-    annotated_images = [r.plot() for r in results]
-
-    # 4️⃣ Encode JPEG song song bằng thread pool
-    loop = asyncio.get_running_loop()
-    encoded_images = await asyncio.gather(
-        *[
-            loop.run_in_executor(executor, encode_image, img)
-            for img in annotated_images
+    data_response = {}
+    for idx, url_idx in enumerate(valid_index_map):
+        print(results[idx].boxes.xyxyn)
+        url = data.urls[url_idx]
+        labels = []
+        for cls in results[idx].boxes.cls.tolist():
+            labels.append(model.names[int(cls)])
+        boxes = results[idx].boxes.xyxyn.tolist()
+        rounded_boxes = [
+            [round(coord, 2) for coord in box] for box in boxes
         ]
-    )
+         # Lưu kết quả
+        data_response[url] = {
+            "labels": labels,
+            "boxes": rounded_boxes
+        }
+    # # 3️⃣ Tạo annotated images
+    # annotated_images = [r.plot() for r in results]
 
-    # 4️⃣ Upload batch annotated images 1 lần
-    uploaded_urls = upload_to_storage(encoded_images)
+    # # 4️⃣ Encode JPEG song song bằng thread pool
+    # loop = asyncio.get_running_loop()
+    # encoded_images = await asyncio.gather(
+    #     *[
+    #         loop.run_in_executor(executor, encode_image, img)
+    #         for img in annotated_images
+    #     ]
+    # )
+
+    # # 4️⃣ Upload batch annotated images 1 lần
+    # uploaded_urls = upload_to_storage(encoded_images)
 
     return JSONResponse({
-        "result_urls": uploaded_urls
+        "data": data_response
     })
