@@ -8,7 +8,7 @@ import requests
 import httpx
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
-import torch
+from typing import List
 
 class ImageURLs(BaseModel):
     urls: list[str]
@@ -19,6 +19,9 @@ model = YOLO("./models/best.pt")
 
 # Tạo thread pool encode JPEG
 executor = ThreadPoolExecutor(max_workers=8)
+
+# class name của mô hình
+CLASS_NAMES: List[str] = ['aptomat notec', 'công tắc ble premium', 'bộ điều khiển trung tâm hunonic homeserver', 'bộ trung tâm RF', 'cảm biến cầu thang', 'cảm biến chuyển động', 'cảm biến cửa', 'cảm biến hiện diện', 'cảm biến khói', 'cảm biến nhiệt độ-độ ẩm', 'camera icat indoor', 'camera icat mini', 'camera icat outdoor', 'chuông cửa hunonic noka', 'công tắc ble luxury', 'công tắc cảm ứng', 'công tắc chống giật', 'công tắc cửa cuốn', 'công tắc datic basic', 'công tắc sim noma', 'công tắc wifi mini', 'đui đèn wifi', 'công tơ điện entec', 'hunonic gate', 'ir smart', 'khóa tadolock', 'công tắc lahu', 'công tắc lahu rtc', 'module input', 'ổ cắm máy bơm sps', 'ổ cắm sk01', 'ổ cắm sk18', 'thiết bị an toàn điện batec', 'thiết bị chống trộm CT01', 'thiết bị rèm']
 
 # -----------------------------
 # HÀM UPLOAD ẢNH LÊN API KHÁC
@@ -68,7 +71,7 @@ async def detect_from_urls(data: ImageURLs):
     print("-----------------------------------")
     print("Received URLs:", data.urls)
     if not data.urls:
-        return JSONResponse({"result_urls": []})
+        return JSONResponse({"data": []})
     # 1️⃣ Tải tất cả ảnh về (gom batch)
     async with httpx.AsyncClient() as client:
         tasks = [fetch_image(url, client) for url in data.urls]
@@ -82,7 +85,7 @@ async def detect_from_urls(data: ImageURLs):
                 valid_index_map.append(i)
 
     if not valid_images:
-        return {"result_urls": []}
+        return JSONResponse({"data": []})
     # 2️⃣ YOLO predict 1 lần cho cả batch
     results = model(valid_images, conf=0.6, imgsz=960)
     data_response = {}
@@ -91,7 +94,8 @@ async def detect_from_urls(data: ImageURLs):
         url = data.urls[url_idx]
         labels = []
         for cls in results[idx].boxes.cls.tolist():
-            labels.append(model.names[int(cls)])
+            label = CLASS_NAMES[int(cls)] if 0 <= int(cls) < len(CLASS_NAMES) else ""
+            labels.append(label)
         boxes = results[idx].boxes.xyxyn.tolist()
         rounded_boxes = [
             [round(coord, 2) for coord in box] for box in boxes
